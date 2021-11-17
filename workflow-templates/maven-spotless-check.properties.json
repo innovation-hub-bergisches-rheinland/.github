@@ -1,6 +1,7 @@
 {
     "name": "Maven Spotless Check",
     "description": "A workflow that checks the codestyle using the Spotless Maven Plugin",
+    "iconName": "ihbr",
     "categories": [
         "Maven POM"
     ],
