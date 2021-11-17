@@ -1,0 +1,10 @@
+{
+    "name": "Maven Spotless Check",
+    "description": "A workflow that checks the codestyle using the Spotless Maven Plugin",
+    "categories": [
+        "Maven POM"
+    ],
+    "filePatterns": [
+        "pom.xml"
+    ]
+}
