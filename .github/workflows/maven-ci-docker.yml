@@ -1,0 +1,242 @@
+# This reusable Workflow provides capabilities to run a fully-fledged CI based on 
+# the Maven lifecycle phases. Therefore the whole CI Process can be configured within
+# Maven. 
+#
+# This workflow does the follwing jobs:
+# - Maven build artifcats and uploads them
+# - Download the built artifacts and run Maven tests
+# - Download the build artifcats and run Maven verify
+# - When test and verify are successful the Maven deploy goal is executed and
+#   docker credentials are passed as environment variables
+
+name: Maven CI with Docker
+
+# This workflow is declared as a reusable workflow
+on:
+  workflow_call:
+    # It expects the inputs listed below
+    inputs:
+      java-version:
+        description: 'The Java version that should be used within this workflow'
+        default: '17'
+        required: false
+        type: string
+      maven-settings-file:
+        description: 'The Maven Settings file location'
+        default: '.github/settings.xml'
+        required: false
+        type: string
+      maven-settings:
+        description: 'The Maven Settings to be used - will only be used if the settings file does not exist'
+        default: |
+          <settings xmlns="http://maven.apache.org/SETTINGS/1.0.0" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:schemaLocation="http://maven.apache.org/SETTINGS/1.0.0 http://maven.apache.org/xsd/settings-1.0.0.xsd">
+          </settings>
+        required: false
+        type: string
+      docker-registry:
+        description: 'The Docker Registry to be used'
+        required: true
+        type: string
+    # And the secrets listed below
+    secrets:
+      docker-registry-user:
+        required: true
+      docker-registry-password:
+        required: true
+
+jobs:
+  build:
+    name: Maven build
+
+    runs-on: ubuntu-latest
+
+    # This workflow will produce the following outputs
+    outputs:
+      groupId: ${{ steps.maven-properties.outputs.groupId }}
+      artifactId: ${{ steps.maven-properties.outputs.artifactId }}
+      version: ${{ steps.maven-properties.outputs.version }}
+      localRepository: ${{ steps.maven-properties.outputs.localRepository }}
+      groupIdRepositoryPath: ${{ steps.maven-properties.outputs.groupIdRepositoryPath }}
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v2
+
+      - name: Set up JDK ${{ inputs.java-version }}
+        uses: actions/setup-java@v2
+        with:
+          java-version: ${{ inputs.java-version }}
+          distribution: 'temurin'
+
+      - name: Update Maven Settings
+        # Copy the settings file - if it throws an error (e.g. not existent)  the settings string is used
+        run: mkdir -p ~/.m2 ; cp ${{ inputs.maven-settings-file }} ~/.m2 || echo "${{ inputs.maven-settings }}" > ~/.m2/settings.xml
+
+      # Using pwsh here, since it is much more usable than bash - especially for safe path building
+      - name: Extract Maven Properties
+        id: maven-properties
+        shell: pwsh
+        run: |
+          $groupId = $(mvn org.apache.maven.plugins:maven-help-plugin:3.2.0:evaluate '-Dexpression=project.groupId' -q -DforceStdout)
+          echo "Group ID: $groupId"
+
+          $artifactId = $(mvn org.apache.maven.plugins:maven-help-plugin:3.2.0:evaluate '-Dexpression=project.artifactId' -q -DforceStdout)
+          echo "Artifact ID: $artifactId"
+
+          $version = $(mvn org.apache.maven.plugins:maven-help-plugin:3.2.0:evaluate '-Dexpression=project.version' -q -DforceStdout)
+          echo "Version: $version"
+
+          $localRepository = $(mvn org.apache.maven.plugins:maven-help-plugin:3.2.0:evaluate '-Dexpression=settings.localRepository' -q -DforceStdout)
+          echo "Local Repository: $localRepository"
+
+          $groupIdRepositoryPath = Join-Path -Path $localRepository -ChildPath $groupId.replace('.', '/') 
+          echo "Local Repository Path for Group: $groupIdRepositoryPath"
+
+          echo "::set-output name=groupId::$groupId"
+          echo "::set-output name=artifactId::$artifactId"
+          echo "::set-output name=version::$version"
+          echo "::set-output name=localRepository::$localRepository"
+          echo "::set-output name=groupIdRepositoryPath::$groupIdRepositoryPath"
+
+      - name: Cache Maven packages
+        id: cache
+        uses: actions/cache@v2
+        with:
+          path: |
+            ${{ steps.maven-properties.outputs.localRepository }}
+          key: cache-1-${{ runner.os }}-m2-${{ hashFiles('**/pom.xml') }}
+          restore-keys: cache-1-${{ runner.os }}-m2
+
+      - name: Build Project
+        # No Snapshot Updates, Batch Mode, Show errors and skip tests
+        run: mvn clean install -nsu -B -e -DskipTests
+
+      # Upload the built artifacts
+      - name: Store Artifacts
+        uses: actions/upload-artifact@v2
+        with:
+          name: maven-artifacts.zip
+          retention-days: 2
+          path: |
+            ${{ steps.maven-properties.outputs.groupIdRepositoryPath }}
+            !${{ steps.maven-properties.outputs.groupIdRepositoryPath }}/**/*.tar.gz
+
+      # But don't cache them
+      - name: Remove Artifacts before caching
+        if: steps.cache.outputs.cache-hit != 'true'
+        run: rm -rf ${{ steps.maven-properties.outputs.groupIdRepositoryPath }}
+
+  unit-tests:
+    name: Maven Test
+    runs-on: ubuntu-latest
+    needs: build
+    steps:
+      - uses: actions/checkout@v2
+
+      - name: Set up JDK ${{ inputs.java-version }}
+        uses: actions/setup-java@v2
+        with:
+          java-version: ${{ inputs.java-version }}
+          distribution: 'temurin'
+
+      - name: Update Maven Settings
+        # Copy the settings file - if it throws an error (e.g. not existent)  the settings string is used
+        run: mkdir -p ~/.m2 ; cp ${{ inputs.maven-settings-file }} ~/.m2 || echo "${{ inputs.maven-settings }}" > ~/.m2/settings.xml
+
+      - name: Cache Maven packages
+        uses: actions/cache@v2
+        with:
+          path: ${{ needs.build.outputs.localRepository }}
+          key: cache-1-${{ runner.os }}-m2-${{ hashFiles('**/pom.xml') }}
+          restore-keys: cache-1-${{ runner.os }}-m2
+
+      - name: Cleanup project artifacts
+        run: rm -rf ${{ needs.build.outputs.groupIdRepositoryPath }} >/dev/null || true
+
+      - name: Download built artifacts
+        uses: actions/download-artifact@v2
+        with:
+          path: ${{ needs.build.outputs.groupIdRepositoryPath }}/
+          name: maven-artifacts.zip
+
+      - name: Run unit tests
+        run: mvn test -nsu -B
+
+  verify:
+    name: Maven Verify
+    runs-on: ubuntu-latest
+    needs: build
+    steps:
+      - uses: actions/checkout@v2
+
+      - name: Set up JDK ${{ inputs.java-version }}
+        uses: actions/setup-java@v2
+        with:
+          java-version: ${{ inputs.java-version }}
+          distribution: 'temurin'
+
+      - name: Update Maven Settings
+        # Copy the settings file - if it throws an error (e.g. not existent)  the settings string is used
+        run: mkdir -p ~/.m2 ; cp ${{ inputs.maven-settings-file }} ~/.m2 || echo "${{ inputs.maven-settings }}" > ~/.m2/settings.xml
+
+      - name: Cache Maven packages
+        uses: actions/cache@v2
+        with:
+          path: ${{ needs.build.outputs.localRepository }}
+          key: cache-1-${{ runner.os }}-m2-${{ hashFiles('**/pom.xml') }}
+          restore-keys: cache-1-${{ runner.os }}-m2
+
+      - name: Cleanup project artifacts
+        run: rm -rf ${{ needs.build.outputs.groupIdRepositoryPath }} >/dev/null || true
+
+      - name: Download built artifacts
+        uses: actions/download-artifact@v2
+        with:
+          path: ${{ needs.build.outputs.groupIdRepositoryPath }}/
+          name: maven-artifacts.zip
+
+      - name: Run verify phase
+        run: mvn verify -nsu -B -DskipTests
+
+# Deployment
+
+  deploy:
+    name: Maven Deploy
+    runs-on: ubuntu-latest
+    needs: [build, unit-tests, verify]
+
+    steps:
+      - uses: actions/checkout@v2
+
+      - name: Set up JDK ${{ inputs.java-version }}
+        uses: actions/setup-java@v2
+        with:
+          java-version: ${{ inputs.java-version }}
+          distribution: 'temurin'
+
+      - name: Update Maven Settings
+        # Copy the settings file - if it throws an error (e.g. not existent)  the settings string is used
+        run: mkdir -p ~/.m2 ; cp ${{ inputs.maven-settings-file }} ~/.m2 || echo "${{ inputs.maven-settings }}" > ~/.m2/settings.xml
+
+      - name: Cache Maven packages
+        uses: actions/cache@v2
+        with:
+          path: ${{ needs.build.outputs.localRepository }}
+          key: cache-1-${{ runner.os }}-m2-${{ hashFiles('**/pom.xml') }}
+          restore-keys: cache-1-${{ runner.os }}-m2
+
+      - name: Cleanup project artifacts
+        run: rm -rf ${{ needs.build.outputs.groupIdRepositoryPath }} >/dev/null || true
+
+      - name: Download built artifacts
+        uses: actions/download-artifact@v2
+        with:
+          path: ${{ needs.build.outputs.groupIdRepositoryPath }}/
+          name: maven-artifacts.zip
+
+      - name: Run Deploy
+        env:
+          DOCKER_REGISTRY_USER: ${{ secrets.docker-registry-user }}
+          DOCKER_REGISTRY_PASSWORD: ${{ secrets.docker-registry-password }}
+          DOCKER_REGISTRY: ${{ inputs.docker-registry }}
+        run: mvn deploy -nsu -B -DskipTests
