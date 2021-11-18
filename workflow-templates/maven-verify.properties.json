@@ -1,0 +1,11 @@
+{
+    "name": "Maven Verify",
+    "description": "A workflow that executes the Maven Lifecycle to the verify phase",
+    "iconName": "ihbr",
+    "categories": [
+        "Maven POM"
+    ],
+    "filePatterns": [
+        "pom.xml"
+    ]
+}
