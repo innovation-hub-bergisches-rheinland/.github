@@ -92,11 +92,11 @@ jobs:
           $groupIdRepositoryPath = Join-Path -Path $localRepository -ChildPath $groupId.replace('.', '/') 
           echo "Local Repository Path for Group: $groupIdRepositoryPath"
 
-          echo "::set-output name=groupId::$groupId"
-          echo "::set-output name=artifactId::$artifactId"
-          echo "::set-output name=version::$version"
-          echo "::set-output name=localRepository::$localRepository"
-          echo "::set-output name=groupIdRepositoryPath::$groupIdRepositoryPath"
+          echo "groupId=$groupId" >> $GITHUB_OUTPUT
+          echo "artifactId=$artifactId" >> $GITHUB_OUTPUT
+          echo "version=$version" >> $GITHUB_OUTPUT
+          echo "localRepository=$localRepository" >> $GITHUB_OUTPUT
+          echo "groupIdRepositoryPath=$groupIdRepositoryPath" >> $GITHUB_OUTPUT
 
       - name: Cache Maven packages
         id: cache
